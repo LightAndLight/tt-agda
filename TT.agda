@@ -4,8 +4,9 @@ open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Fin using (Fin; zero; suc; toℕ)
 open import Data.Maybe using (Maybe; just; map)
 open import Data.Nat using (ℕ; suc; _∸_)
-open import Data.Product using (Σ-syntax; _×_; _,_)
+open import Data.Product using (Σ-syntax; ∃-syntax; _×_; _,_)
 open import Data.Sum using (_⊎_) renaming (inj₁ to inl; inj₂ to inr)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 -- This takes the load off. Thanks, Conor!
 data sort : Set where
@@ -45,35 +46,37 @@ a [ b ] = subst (λ { zero → b; (suc n) → var n }) a
 
 infixl 30 _[_]
 
-data has-ann : Set where
-  allow-ann : has-ann
-  block-ann : has-ann
-
-data value (n : ℕ) : has-ann → (s : sort) → tt s n → Set where
-  value-var : ∀{a ix} → value n a infer (var ix)
+data value (n : ℕ) : (s : sort) → tt s n → Set where
+  value-var : ∀{ix} → value n infer (var ix)
   -- if we allow variables to be values, then
   -- applications must also be values
   value-app :
-    ∀{a f x} →
-    value n a infer f →
-    value n a check x →
-    value n a infer (app f x)
+    ∀{f x} →
+    value n infer f →
+    value n check x →
+    (∃[ x ] (∃[ T ] (ann x T ≡ f)) → ⊥) →
+    value n infer (app f x)
   value-ann :
-    ∀{a x T} →
-    value n block-ann infer x →
-    value n a check T →
-    value n allow-ann infer (ann (embed x) T)
+    ∀{x T} →
+    value n check x →
+    value n check T →
+    (∃[ e ] (embed e ≡ x) → ⊥) →
+    value n infer (ann x T)
   value-lam :
-    ∀{a e} →
-    value (suc n) a check e →
-    value n a check (lam e)
+    ∀{e} →
+    value (suc n) check e →
+    value n check (lam e)
   value-pi :
-    ∀{a S T} →
-    value n a check S →
-    value (suc n) a check T →
-    value n a check (pi S T)
-  value-type : ∀{a} → value n a check type
-  value-embed : ∀{a e} → value n block-ann infer e → value n a check (embed e)
+    ∀{S T} →
+    value n check S →
+    value (suc n) check T →
+    value n check (pi S T)
+  value-type : value n check type
+  value-embed :
+    ∀{e} →
+    value n infer e →
+    (∃[ x ] (∃[ T ] (ann x T ≡ e)) → ⊥) →
+    value n check (embed e)
 
 data _↓_ {n : ℕ} : {s : sort} → tt s n → tt s n → Set where
   step-app1 :
@@ -81,42 +84,50 @@ data _↓_ {n : ℕ} : {s : sort} → tt s n → tt s n → Set where
     f ↓ f' →
     app f x ↓ app f' x
   step-app2 :
-    ∀{a} {f : tt infer n} {x x' : tt check n} →
-    value n a infer f →
+    ∀{f : tt infer n} {x x' : tt check n} →
+    value n infer f →
     x ↓ x' →
     app f x ↓ app f x'
   step-beta :
-    ∀{a} {e : tt check (suc n)} {x S : tt check n} {T : tt check (suc n)} →
-    value n allow-ann infer (ann (lam e) (pi S T)) →
-    value n a check x →
+    ∀{e : tt check (suc n)} {x S : tt check n} {T : tt check (suc n)} →
+    value n infer (ann (lam e) (pi S T)) →
+    value n check x →
     app (ann (lam e) (pi S T)) x ↓ ann (e [ ann x S ]) (T [ ann x S ])
-  step-upsilon :
-    ∀{a x T} →
-    value n a check x →
-    value n a check T →
+  step-upsilon1 :
+    ∀{x T} →
+    value n check x →
+    value n check T →
     embed (ann x T) ↓ x
-  step-ann1 : ∀{a} {x x' T : tt check n} → value n a check T → x ↓ x' → ann x T ↓ ann x' T
+  step-upsilon2 :
+    ∀{x T} →
+    value n infer x →
+    value n check T →
+    ann (embed x) T ↓ x
+  step-ann1 : ∀{x x' T : tt check n} → value n check T → x ↓ x' → ann x T ↓ ann x' T
   step-ann2 : ∀{x T T' : tt check n} → T ↓ T' → ann x T ↓ ann x T'
 
   step-lam : ∀{e e' : tt check (suc n)} → e ↓ e' → lam e ↓ lam e'
   step-pi1 : ∀{S S' : tt check n} {T} → S ↓ S' → pi S T ↓ pi S' T
-  step-pi2 : ∀{a} {S : tt check n} {T T'} → value n a check S → T ↓ T' → pi S T ↓ pi S T'
+  step-pi2 : ∀{S : tt check n} {T T'} → value n check S → T ↓ T' → pi S T ↓ pi S T'
   step-embed : ∀{x x' : tt infer n} → x ↓ x' → embed x ↓ embed x'
 
-value-done : ∀{a s n} {x x' : tt s n} → value n a s x → x ↓ x' → ⊥
+value-done : ∀{s n} {x x' : tt s n} → value n s x → x ↓ x' → ⊥
 value-done value-var ()
 value-done (value-lam x-v) (step-lam x-x') = value-done x-v x-x'
 value-done (value-pi v-S v-T) (step-pi1 S-S') = value-done v-S S-S'
 value-done (value-pi v-S v-T) (step-pi2 _ T-T') = value-done v-T T-T'
 value-done value-type ()
-value-done (value-embed ()) (step-upsilon x x₁)
-value-done {a} (value-embed value-var) (step-embed x-x') = value-done {a} value-var x-x'
-value-done (value-embed (value-app v-f v-x)) (step-embed x-x') = value-done (value-app v-f v-x) x-x'
-value-done (value-app v-f v-x) (step-app1 x-x') = value-done v-f x-x'
-value-done (value-app v-f v-x) (step-app2 _ x-x') = value-done v-x x-x'
-value-done (value-app () v-x) (step-beta l lm)
-value-done {a} (value-ann v-x v-T) (step-ann1 _ x-x') = value-done {a} (value-embed v-x) x-x'
-value-done (value-ann v-x v-T) (step-ann2 x-x') = value-done v-T x-x'
+value-done (value-embed value-var not-ann) (step-embed x-x') = value-done value-var x-x'
+value-done (value-embed (value-app v-f v-x not-ann') not-ann) (step-embed x-x') =
+  value-done (value-app v-f v-x not-ann') x-x'
+value-done (value-embed (value-ann v-x v-T not-embed) not-ann) x-x' = ⊥-elim (not-ann (_ , _ , refl))
+value-done (value-app v-f v-x not-ann) (step-app1 x-x') = value-done v-f x-x'
+value-done (value-app v-f v-x not-ann) (step-app2 _ x-x') = value-done v-x x-x'
+value-done (value-app (value-ann v-f v-f₁ not-embed) v-x not-ann) (step-beta _ _) =
+  ⊥-elim (not-ann (_ , (_ , refl)))
+value-done (value-ann v-x v-T not-embed) (step-ann1 _ x-x') = value-done v-x x-x'
+value-done (value-ann v-x v-T not-embed) (step-ann2 x-x') = value-done v-T x-x'
+value-done (value-ann v-x v-T not-embed) (step-upsilon2 _ _) = ⊥-elim (not-embed (_ , refl))
 
 data _↝_ {n : ℕ} : ∀{s} → tt s n → tt s n → Set where
   eval-refl-infer : ∀{s} {a : tt s n} → a ↝ a
@@ -138,13 +149,13 @@ data index : ∀{n} → Fin n → ctx n → tt check n → Set where
 data _⊢_∶_ {n : ℕ} : ∀{s} → ctx n → tt s n → tt check n → Set where
   t-type : ∀{Γ : ctx n} → Γ ⊢ type ∶ type
   t-lam :
-    ∀{Γ : ctx n} {S S' T e} →
-    (Γ ∷ S' ⊢ e ∶ T) →
+    ∀{Γ : ctx n} {S T e} →
+    (Γ ∷ S ⊢ e ∶ T) →
     Γ ⊢ lam e ∶ pi S T
   t-pi :
-    ∀{Γ : ctx n} {S S' T} →
+    ∀{Γ : ctx n} {S T} →
     (Γ ⊢ S ∶ type) →
-    (Γ ∷ S' ⊢ T ∶ type) →
+    (Γ ∷ S ⊢ T ∶ type) →
     Γ ⊢ pi S T ∶ type
   t-embed : ∀{Γ : ctx n} {x T} → (Γ ⊢ x ∶ T) → Γ ⊢ embed x ∶ T
 
@@ -155,15 +166,36 @@ data _⊢_∶_ {n : ℕ} : ∀{s} → ctx n → tt s n → tt check n → Set wh
     (Γ ⊢ x ∶ S) →
     Γ ⊢ app f x ∶ T [ ann x S ]
   t-ann :
-    ∀{Γ : ctx n} {x T} →
+    ∀{Γ : ctx n} {x T T'} →
     (Γ ⊢ T ∶ type) →
     (Γ ⊢ x ∶ T) →
-    Γ ⊢ ann x T ∶ T
+    T ≡ T' →
+    Γ ⊢ ann x T ∶ T'
+
+subst-admissible-lam :
+  ∀{sort n} {Γ : ctx n} {x : tt sort (suc (suc n))} {s S₁ S₂ T} →
+  Γ ⊢ s ∶ S₁ →
+  Γ ∷ S₁ ∷ S₂ ⊢ x ∶ T →
+  Γ ∷ S₂ [ s ] ⊢ x [ s ] ∶ T [ s ]
+subst-admissible-lam = ?
+
+subst-admissible :
+  ∀{sort n} {Γ : ctx n} {x : tt sort (suc n)} {s S T} →
+  Γ ∷ S ⊢ x ∶ T →
+  Γ ⊢ s ∶ S →
+  Γ ⊢ x [ s ] ∶ T [ s ]
+subst-admissible t-type s-S = t-type
+subst-admissible (t-lam x-T) s-S = t-lam {!!}
+subst-admissible (t-pi x-T x-T₁) s-S = {!!}
+subst-admissible (t-embed x-T) s-S = {!!}
+subst-admissible (t-var x) s-S = {!!}
+subst-admissible (t-app x-T x-T₁) s-S = {!!}
+subst-admissible (t-ann x-T x-T₁ x₁) s-S = {!!}
 
 progress :
   ∀{s n} {Γ : ctx n} {x : tt s n} {T : tt check n} →
   Γ ⊢ x ∶ T →
-  (Σ[ x' ∈ tt s n ] (x ↓ x') ⊎ value n allow-ann s x)
+  (Σ[ x' ∈ tt s n ] (x ↓ x') ⊎ value n s x)
 progress t-type = inr value-type
 progress (t-lam e) with progress e
 progress (t-lam e) | inl (e' , e-e') = inl (lam e' , step-lam e-e')
@@ -176,23 +208,112 @@ progress (t-pi S T) | inr v-S | inr v-T = inr (value-pi v-S v-T)
 progress (t-var x) = inr value-var
 progress (t-embed t) with progress t
 progress (t-embed t) | inl (t' , t-t') = inl (embed t' , step-embed t-t')
-progress (t-embed t) | inr v-t = {!!}
+progress (t-embed t) | inr value-var = inr (value-embed value-var (λ ()))
+progress (t-embed t) | inr (value-ann v-x v-T not-embed) = inl (_ , step-upsilon1 v-x v-T)
+progress (t-embed t) | inr (value-app value-var v-x not-ann) =
+  inr (value-embed (value-app value-var v-x not-ann) (λ ()))
+progress (t-embed t) | inr (value-app (value-app v-f v-f₁ not-ann') v-x not-ann) =
+  inr (value-embed (value-app (value-app v-f v-f₁ not-ann') v-x not-ann) (λ ()))
+progress (t-embed t) | inr (value-app (value-ann v-a v-T not-embed) v-x not-ann) =
+  ⊥-elim (not-ann (_ , _ , refl))
 progress (t-app f a) with progress f
 progress (t-app f a) | inl (f' , f-f') = inl (_ , step-app1 f-f')
 progress (t-app f a) | inr v-f with progress a
 progress (t-app f a) | inr v-f | inl (x' , x-x') = inl (_ , step-app2 v-f x-x')
-progress (t-app f a) | inr v-f | inr v-a = {!!}
-progress (t-ann x T) = {!!}
+progress (t-app f a) | inr value-var | inr v-a = inr (value-app value-var v-a (λ ()))
+progress (t-app f a) | inr (value-app v-f v-x not-ann) | inr v-a =
+  inr (value-app (value-app v-f v-x not-ann) v-a (λ ()))
+progress (t-app a x) | inr (value-ann (value-lam v-a) (value-lam v-T) not-embed) | inr v-x with a
+progress (t-app a x)
+  | inr (value-ann (value-lam v-a) (value-lam v-T) not-embed) | inr v-x | t-ann () _ _
+progress (t-app a x) | inr (value-ann (value-lam v-a) value-type not-embed) | inr v-x with a
+progress (t-app a x) | inr (value-ann (value-lam v-a) value-type not-embed) | inr v-x | t-ann _ _ ()
+progress (t-app a x) | inr (value-ann (value-lam v-a) (value-embed v-T x₂) not-embed) | inr v-x with a
+progress (t-app a x) | inr (value-ann (value-lam v-a) (value-embed v-T x₂) not-embed) | inr v-x | t-ann _ _ ()
+progress (t-app (t-ann a () refl) x) | inr (value-ann (value-pi v-S v-T') v-T not-embed) | inr v-x
+progress (t-app (t-ann f () refl) x) | inr (value-ann value-type v-T not-embed) | inr v-x
+progress (t-app f x) | inr (value-ann (value-lam v-a) (value-pi v-S v-T) not-embed) | inr v-x =
+  inl (_ , (step-beta (value-ann (value-lam v-a) (value-pi v-S v-T) not-embed) v-x))
+progress (t-app f x) | inr (value-ann (value-embed v-a not-ann) v-T not-embed) | inr v-x =
+  ⊥-elim (not-embed (_ , refl))
+progress (t-ann x T T≡T') with progress x
+progress (t-ann x T T≡T') | inl (x' , x-x') = inl (_ , step-ann2 x-x')
+progress (t-ann x T T≡T') | inr v-x with progress T
+progress (t-ann x T T≡T') | inr v-x | inl (T' , T-T') = inl (_ , step-ann1 v-x T-T')
+progress (t-ann () T T≡T') | inr (value-lam v-x) | inr v-T
+progress (t-ann (t-pi t-S t-T) T T≡T') | inr (value-pi v-S v-T) | inr (value-embed v-x x) =
+  inl (_ , step-upsilon2 v-x (value-pi v-S v-T))
+progress (t-ann (t-pi t-S t-T) () T≡T') | inr (value-pi v-S v-T) | inr (value-pi v-x v-x₁)
+progress (t-ann (t-pi t-S t-T) () T≡T') | inr (value-pi v-S v-T) | inr value-type
+progress (t-ann (t-pi t-S t-T) T T≡T') | inr (value-pi v-S v-T) | inr (value-lam v-x) =
+  inr (value-ann (value-lam v-x) (value-pi v-S v-T) (λ ()))
+progress (t-ann t-type () T≡T') | inr value-type | inr (value-lam v-T)
+progress (t-ann t-type T T≡T') | inr value-type | inr (value-pi v-T v-T₁) =
+  inr (value-ann (value-pi v-T v-T₁) value-type (λ ()))
+progress (t-ann t-type T T≡T') | inr value-type | inr value-type =
+  inr (value-ann value-type value-type (λ ()))
+progress (t-ann t-type (t-embed T) T≡T') | inr value-type | inr (value-embed v-T not-ann) =
+  inl (_ , step-upsilon2 v-T value-type)
+progress (t-ann (t-embed x) () T≡T') | inr (value-embed v-x not-ann) | inr (value-lam v-T)
+progress (t-ann (t-embed x) () T≡T') | inr (value-embed v-x not-ann) | inr (value-pi v-T v-T₁)
+progress (t-ann x () T≡T') | inr (value-embed v-x not-ann) | inr value-type
+progress (t-ann x T T≡T') | inr (value-embed v-x not-ann) | inr (value-embed v-T x₁) =
+  inl (_ , step-upsilon2 v-T (value-embed v-x not-ann))
 
-strong-normalisation :
-  ∀{a s n} {Γ : ctx n} {x : tt s n} {T : tt check n} →
+preservation-type :
+  ∀{s n} {Γ : ctx n} {x : tt s n} {T T' : tt check n} →
+  Γ ⊢ T ∶ type →
   Γ ⊢ x ∶ T →
-  Σ[ x' ∈ tt s n ] (x ↝ x' × value n a s x')
-strong-normalisation = {!!}
+  T ↓ T' →
+  Γ ⊢ x ∶ T'
+preservation-type T-type t-type ()
+preservation-type (t-pi T-type T-type₁) (t-lam x-T) (step-pi1 T-T') = {!!}
+preservation-type (t-pi T-type T-type₁) (t-lam x-T) (step-pi2 x T-T') = {!!}
+preservation-type t-type (t-pi x-T x-T₁) ()
+preservation-type t-type (t-embed x-T) ()
+preservation-type (t-pi T-type T-type₁) (t-embed x-T) (step-pi1 T-T') = {!!}
+preservation-type (t-pi T-type T-type₁) (t-embed x-T) (step-pi2 x₁ T-T') = {!!}
+preservation-type (t-embed T-type) (t-embed x-T) (step-upsilon1 x₁ x₂) = {!!}
+preservation-type (t-embed T-type) (t-embed x-T) (step-embed T-T') = {!!}
+preservation-type t-type (t-var x) ()
+preservation-type (t-pi T-type T-type₁) (t-var x) (step-pi1 T-T') = {!!}
+preservation-type (t-pi T-type T-type₁) (t-var x) (step-pi2 x₁ T-T') = {!!}
+preservation-type (t-embed T-type) (t-var x) (step-upsilon1 x₁ x₂) = {!!}
+preservation-type (t-embed T-type) (t-var x) (step-embed T-T') = {!!}
+preservation-type T-type (t-app x-T x-T₁) T-T' = {!!}
+preservation-type T-type (t-ann x-T x-T₁ refl) T-T' = t-ann x-T x-T₁ {!!}
 
-preservation-⇐ :
+preservation :
   ∀{s n} {Γ : ctx n} {x x' : tt s n} {T : tt check n} →
   Γ ⊢ x ∶ T →
   x ↓ x' →
   Γ ⊢ x' ∶ T
-preservation-⇐ t x-x' = {!!}
+preservation t-type ()
+preservation (t-lam t) (step-lam x-x') = t-lam (preservation t x-x')
+preservation (t-pi t t₁) (step-pi1 x-x') = t-pi (preservation t x-x') {!!}
+preservation (t-pi t t₁) (step-pi2 x x-x') = t-pi t (preservation t₁ x-x')
+preservation (t-embed t) (step-upsilon1 x x₁) with t
+preservation (t-embed t) (step-upsilon1 x x₁) | t-ann _ ty refl = ty
+preservation (t-embed t) (step-embed x-x') = t-embed (preservation t x-x')
+preservation (t-var x) ()
+preservation (t-app t-f t-x) (step-app1 f-f') = t-app (preservation t-f f-f') t-x
+preservation (t-app t-f t-x) (step-app2 v-f x-x') =
+  t-app {!!} (preservation t-x x-x')
+preservation (t-app t t₁) (step-beta x₁ x₂) = {!!}
+preservation (t-ann T t-type refl) (step-ann1 x ())
+preservation (t-ann T t-type refl) (step-ann2 ())
+preservation (t-ann T (t-lam x) refl) (step-ann1 x₁ x-x') =
+  t-ann T (preservation (t-lam x) x-x') refl
+preservation (t-ann T (t-lam x) refl) (step-ann2 x-x') = {!!}
+preservation (t-ann T (t-pi x x₁) refl) x-x' = {!!}
+preservation (t-ann T (t-embed x) refl) (step-upsilon2 _ _) = x
+preservation (t-ann T (t-embed x) refl) (step-ann1 x₂ x-x') =
+  t-ann T (preservation (t-embed x) x-x') refl
+preservation (t-ann T (t-embed x) refl) (step-ann2 x-x') =
+  {!!}
+
+strong-normalisation :
+  ∀{s n} {Γ : ctx n} {x : tt s n} {T : tt check n} →
+  Γ ⊢ x ∶ T →
+  Σ[ x' ∈ tt s n ] (x ↝ x' × value n s x')
+strong-normalisation = {!!}
